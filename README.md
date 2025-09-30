@@ -1,6 +1,6 @@
 # [Eco Archer Team RFID Database Attendance Tracker]
 
-RFID-based attendance tracker with Google Sheets logging and real-time Discord notifications.
+The RFID Database & Attendance Tracker is designed to automate attendance monitoring at the Eco Archer Team Office. Team members will be able to use their RFID-enabled school ID cards to record time-in and time-out. The system automatically logs attendance in a Google Sheet for record-keeping and sends real-time notifications to the Eco Archer Team Discord server, allowing members and admins to view attendance events instantly. Unauthorized IDs attempting access are also flagged and reported.
 
 ## System Overview
 
