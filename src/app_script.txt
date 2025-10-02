@@ -1,0 +1,169 @@
+/**
+ * Google Apps Script for RFID Attendance System
+ * Manages employee database and attendance tracking via Google Sheets
+ */
+
+const SHEETS_ID = "1ANvnXN-qxYwKOGHsHXJGNZ4yMSZeRStHI9AMF3SRX0g";
+
+const spreadSheet = SpreadsheetApp.openById(SHEETS_ID);
+const dbSheet = spreadSheet.getSheetByName("Database");
+const attendanceSheet = spreadSheet.getSheetByName("Attendance");
+
+/**
+ * HTTP GET handler - Returns employee database as JSON
+ * Automatically cleans up past attendance records before responding
+ * @param {Object} e - HTTP request event object
+ * @returns {ContentService.TextOutput} JSON array of employee data
+ */
+function doGet(e) {
+  fillMissingTimeouts();
+  
+  const range = spreadSheet.getRange("B8:E");
+  const values = range.getValues();
+  const validUIDs = [];
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const isComplete = row.every(cell => cell !== '');
+    
+    if (isComplete) {
+      validUIDs.push(row);
+    }
+  }
+
+  const jsonOutput = convertToJson(validUIDs);
+  const output = ContentService.createTextOutput(jsonOutput);
+  output.setMimeType(ContentService.MimeType.JSON);
+  return output;
+}
+
+/**
+ * HTTP POST handler - Records attendance data
+ * Handles both time-in and time-out logic based on existing records
+ * @param {Object} e - HTTP request event object containing JSON payload
+ */
+function doPost(e) {
+  try {
+    const params = JSON.parse(e.postData.contents);
+    const uid = params.uid;
+    const accessGranted = params.access_granted;
+    const timestamp = new Date();
+    const formattedDate = Utilities.formatDate(timestamp, "Asia/Manila", "yyyy-MM-dd");
+    const formattedTime = Utilities.formatDate(timestamp, "Asia/Manila", "HH:mm");
+    const HEADER_ROW_OFFSET = 8;
+
+    let actionType = "time in";
+    let userInfo = null;
+    let existingEntryRow = null;
+
+    const lastRow = attendanceSheet.getLastRow();
+    const data = attendanceSheet.getRange("B8:H" + lastRow).getDisplayValues();
+
+    // Check for existing time-in without time-out
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][0] === uid && data[i][4] !== "" && data[i][6] === "") {
+        existingEntryRow = i + HEADER_ROW_OFFSET;
+        actionType = "time out";
+        userInfo = [data[i][0], data[i][1], data[i][2], data[i][3]];
+        break;
+      }
+    }
+
+    if (existingEntryRow) {
+      // Record time-out for existing entry
+      attendanceSheet.getRange(existingEntryRow, 8).setValue(formattedTime);
+    } else {
+      // Handle new time-in entry
+      if (accessGranted) {
+        const dbData = dbSheet.getRange("B8:E").getValues();
+        userInfo = dbData.find(row => row[0] === uid);
+
+        if (!userInfo) {
+          console.error("User not found in database: " + uid);
+          return;
+        }
+      } else {
+        userInfo = [uid, "Unknown", "Unknown", "Unknown"];
+      }
+      
+      attendanceSheet.appendRow([
+        "", userInfo[0], userInfo[1], userInfo[2], 
+        userInfo[3], formattedDate, formattedTime, ""
+      ]);
+    }
+
+    console.log(`Action: ${actionType}, UID: ${uid}, Access: ${accessGranted}`);
+    
+  } catch (error) {
+    console.error("doPost error: " + error.toString());
+  }
+}
+
+/**
+ * Converts 2D array data to JSON format for API response
+ * @param {Array<Array>} data - 2D array of employee data from spreadsheet
+ * @returns {string} JSON string containing formatted employee records
+ */
+function convertToJson(data) {
+  const jsonData = data.map(row => ({
+    uid: row[0],
+    dlsu_id: row[1],
+    name: row[2],
+    discord_username: row[3],
+    timestamp: Utilities.formatDate(new Date(), "Asia/Manila", "HH:mm")
+  }));
+
+  return JSON.stringify(jsonData);
+}
+
+/**
+ * Data integrity function - Marks past attendance records with missing timeouts as invalid
+ * Prevents incomplete attendance records from accumulating in the system
+ * Called automatically during doGet() to maintain data quality
+ */
+function fillMissingTimeouts() {
+  const HEADER_ROW_OFFSET = 8;
+  const lastRow = attendanceSheet.getLastRow();
+  const data = attendanceSheet.getRange("B8:H" + lastRow).getDisplayValues();
+  
+  console.log("Checking attendance records for missing timeouts...");
+  
+  const DATE_COL = 4;    // Column F (Date)
+  const TIME_IN_COL = 5; // Column G (Time in)
+  const TIME_OUT_COL = 6; // Column H (Time out)
+
+  const today = new Date();
+  const todayString = Utilities.formatDate(today, "Asia/Manila", "yyyy-MM-dd");
+  let updatedCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const rowDate = data[i][DATE_COL];
+    const timeOut = data[i][TIME_OUT_COL];
+    const timeIn = data[i][TIME_IN_COL];
+
+    // Skip incomplete rows
+    if (!rowDate || !timeIn || timeIn === "") {
+      continue;
+    }
+
+    // Process records with missing timeout
+    if (timeOut === "") {
+      const recordDate = new Date(rowDate);
+      const currentDate = new Date(todayString);
+      
+      console.log(`Checking row ${i + HEADER_ROW_OFFSET + 1}: ${rowDate}`);
+      
+      // Mark past dates as invalid
+      if (recordDate < currentDate) {
+        console.log(`Marking past record as invalid: ${rowDate}`);
+        attendanceSheet.getRange(i + HEADER_ROW_OFFSET, 8).setValue("invalid");
+        updatedCount++;
+      }
+    }
+  }
+  
+  console.log(updatedCount > 0 
+    ? `Updated ${updatedCount} past attendance records with 'invalid' timeout`
+    : "No past attendance records found that need updating"
+  );
+}
